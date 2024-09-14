@@ -16,7 +16,13 @@ limitations under the License.
 
 package runtime
 
+/*
+#cgo LDFLAGS: -lmetis
+#include <metis.h>
+*/
+
 import (
+	"C"
 	"context"
 	"errors"
 	"fmt"
@@ -1118,6 +1124,32 @@ func (f *frameworkImpl) RunScorePlugins(ctx context.Context, state *framework.Cy
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	errCh := parallelize.NewErrorChannel()
+
+	var nVertices C.idx_t = 6
+	var nWeights C.idx_t = 1
+	var nparts C.idx_t = 2
+	var objval C.idx_t
+	var part [6]C.idx_t
+
+	// METIS_PartGraphKway 호출
+	metisStatus := C.METIS_PartGraphKway(
+		&nVertices,    // Number of vertices
+		&nWeights,     // Weights per vertex
+		nil,           // xadj (graph adjacency info)
+		nil,           // adjncy (graph adjacency info)
+		nil, nil, nil, // vwgt, adjwgt, wgt flag
+		&nparts,  // Number of parts
+		nil, nil, // tpwgts, ubvec
+		nil,      // options
+		&objval,  // Object value
+		&part[0], // Partition result
+	)
+
+	if metisStatus == C.METIS_OK {
+		fmt.Println("Partitioning succeeded!")
+	} else {
+		fmt.Println("Partitioning failed!")
+	}
 
 	if len(plugins) > 0 {
 		logger := klog.FromContext(ctx)
