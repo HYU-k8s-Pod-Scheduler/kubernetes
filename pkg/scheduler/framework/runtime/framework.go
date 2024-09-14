@@ -16,19 +16,15 @@ limitations under the License.
 
 package runtime
 
-/*
-#include <stdio.h>
-int testc(int a, int b)  {
-	printf("Hi, I'm C! %d %d\n", a, b);
-}
-*/
-import "C"
-
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"io/ioutil"
+	"net/http"
 	"reflect"
 	"sort"
 	"time"
@@ -1127,7 +1123,47 @@ func (f *frameworkImpl) RunScorePlugins(ctx context.Context, state *framework.Cy
 	defer cancel()
 	errCh := parallelize.NewErrorChannel()
 
-	C.testc(1, 3)
+	requestData := map[string]interface{}{
+		"adjacency_list": [][]int{[]int{1, 2}, []int{0, 2, 3}, []int{0, 1, 3}, []int{1, 2, 4}, []int{3}},
+		"num_parts":      2,
+		"eweights":       [][]int{[]int{1, 2}, []int{1, 2, 3}, []int{1, 2, 100}, []int{1, 2, 1}, []int{1}},
+	}
+
+	jsonData, err := json.Marshal(requestData)
+	if err != nil {
+		fmt.Errorf("Error marshalling JSON: %v", err)
+	}
+
+	url := "http://metis-api-service.kube-system.svc.cluster.local:80/partition"
+
+	request, err := http.NewRequest(http.MethodPost, url, bytes.NewBuffer(jsonData))
+	if err != nil {
+		fmt.Errorf("Error creating request: %v", err)
+	}
+
+	// Content-Type 헤더를 설정합니다.
+	request.Header.Set("Content-Type", "application/json")
+
+	// 클라이언트를 생성하고 요청을 보냅니다.
+	client := &http.Client{}
+	response, err := client.Do(request)
+	if err != nil {
+		fmt.Errorf("Error making POST request: %v", err)
+	}
+	defer response.Body.Close() // 요청이 끝나면 응답 본문을 닫습니다.
+
+	// 응답 상태 코드를 출력합니다.
+	fmt.Printf("Status Code: %d\n", response.StatusCode)
+
+	// 응답 본문을 읽습니다.
+	body, err := ioutil.ReadAll(response.Body)
+	if err != nil {
+		fmt.Errorf("Error reading response body: %v", err)
+	}
+
+	// 응답 본문을 출력합니다.
+	fmt.Println("Response Body:")
+	fmt.Println(string(body))
 
 	if len(plugins) > 0 {
 		logger := klog.FromContext(ctx)
