@@ -1111,13 +1111,13 @@ func (f *frameworkImpl) RunScorePlugins(ctx context.Context, state *framework.Cy
 		if state.SkipScorePlugins.Has(pl.Name()) {
 			continue
 		}
+		fmt.Println(pl.Name())
 		plugins = append(plugins, pl)
 		pluginToNodeScores[pl.Name()] = make(framework.NodeScoreList, len(nodes))
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	errCh := parallelize.NewErrorChannel()
-	fmt.Println(numPlugins)
 
 	if len(plugins) > 0 {
 		logger := klog.FromContext(ctx)
