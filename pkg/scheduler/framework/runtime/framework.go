@@ -1250,6 +1250,14 @@ func (f *frameworkImpl) RunScorePlugins(ctx context.Context, state *framework.Cy
 		return nil, framework.AsStatus(fmt.Errorf("applying score defaultWeights on Score plugins: %w", err))
 	}
 
+	test, err := json.Marshal(allNodePluginScores)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+
+	fmt.Println(string(test))
+
 	return allNodePluginScores, nil
 }
 
