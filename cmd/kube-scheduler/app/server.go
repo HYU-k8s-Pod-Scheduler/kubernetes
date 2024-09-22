@@ -18,16 +18,27 @@ limitations under the License.
 package app
 
 import (
+	// HYU
+	"bytes"
+	"encoding/json"
+	"io/ioutil"
+	"time"
+
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors" // 수정됨
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+
 	"context"
 	"fmt"
 	"net/http"
 	"os"
 	goruntime "runtime"
 
-	"github.com/blang/semver/v4"
 	"github.com/spf13/cobra"
-	coordinationv1 "k8s.io/api/coordination/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apiserver/pkg/authentication/authenticator"
@@ -40,7 +51,6 @@ import (
 	"k8s.io/apiserver/pkg/server/mux"
 	"k8s.io/apiserver/pkg/server/routes"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
-	utilversion "k8s.io/apiserver/pkg/util/version"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/events"
@@ -48,7 +58,6 @@ import (
 	cliflag "k8s.io/component-base/cli/flag"
 	"k8s.io/component-base/cli/globalflag"
 	"k8s.io/component-base/configz"
-	"k8s.io/component-base/featuregate"
 	"k8s.io/component-base/logs"
 	logsapi "k8s.io/component-base/logs/api/v1"
 	"k8s.io/component-base/metrics/features"
@@ -60,7 +69,6 @@ import (
 	"k8s.io/klog/v2"
 	schedulerserverconfig "k8s.io/kubernetes/cmd/kube-scheduler/app/config"
 	"k8s.io/kubernetes/cmd/kube-scheduler/app/options"
-	kubefeatures "k8s.io/kubernetes/pkg/features"
 	"k8s.io/kubernetes/pkg/scheduler"
 	kubeschedulerconfig "k8s.io/kubernetes/pkg/scheduler/apis/config"
 	"k8s.io/kubernetes/pkg/scheduler/apis/config/latest"
@@ -79,10 +87,6 @@ type Option func(runtime.Registry) error
 
 // NewSchedulerCommand creates a *cobra.Command object with default parameters and registryOptions
 func NewSchedulerCommand(registryOptions ...Option) *cobra.Command {
-	// explicitly register (if not already registered) the kube effective version and feature gate in DefaultComponentGlobalsRegistry,
-	// which will be used in NewOptions.
-	_, _ = utilversion.DefaultComponentGlobalsRegistry.ComponentGlobalsOrRegister(
-		utilversion.DefaultKubeComponent, utilversion.DefaultBuildEffectiveVersion(), utilfeature.DefaultMutableFeatureGate)
 	opts := options.NewOptions()
 
 	cmd := &cobra.Command{
@@ -95,10 +99,6 @@ suitable Node. Multiple different schedulers may be used within a cluster;
 kube-scheduler is the reference implementation.
 See [scheduling](https://kubernetes.io/docs/concepts/scheduling-eviction/)
 for more information about scheduling and the kube-scheduler component.`,
-		PersistentPreRunE: func(*cobra.Command, []string) error {
-			// makes sure feature gates are set before RunE.
-			return opts.ComponentGlobalsRegistry.Set()
-		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runCommand(cmd, opts, registryOptions...)
 		},
@@ -133,10 +133,10 @@ for more information about scheduling and the kube-scheduler component.`,
 // runCommand runs the scheduler.
 func runCommand(cmd *cobra.Command, opts *options.Options, registryOptions ...Option) error {
 	verflag.PrintAndExitIfRequested()
-	fg := opts.ComponentGlobalsRegistry.FeatureGateFor(utilversion.DefaultKubeComponent)
+
 	// Activate logging as soon as possible, after that
 	// show flags with the final logging configuration.
-	if err := logsapi.ValidateAndApply(opts.Logs, fg); err != nil {
+	if err := logsapi.ValidateAndApply(opts.Logs, utilfeature.DefaultFeatureGate); err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)
 	}
@@ -155,7 +155,7 @@ func runCommand(cmd *cobra.Command, opts *options.Options, registryOptions ...Op
 		return err
 	}
 	// add feature enablement metrics
-	fg.(featuregate.MutableFeatureGate).AddMetrics()
+	utilfeature.DefaultMutableFeatureGate.AddMetrics()
 	return Run(ctx, cc, sched)
 }
 
@@ -179,13 +179,14 @@ func Run(ctx context.Context, cc *schedulerserverconfig.CompletedConfig, sched *
 	cc.EventBroadcaster.StartRecordingToSink(ctx.Done())
 	defer cc.EventBroadcaster.Shutdown()
 
+	// HYU
+	go startRebalanceLoop(ctx, sched)
+
 	// Setup healthz checks.
-	var checks, readyzChecks []healthz.HealthChecker
+	var checks []healthz.HealthChecker
 	if cc.ComponentConfig.LeaderElection.LeaderElect {
 		checks = append(checks, cc.LeaderElection.WatchDog)
-		readyzChecks = append(readyzChecks, cc.LeaderElection.WatchDog)
 	}
-	readyzChecks = append(readyzChecks, healthz.NewShutdownHealthz(ctx.Done()))
 
 	waitingForLeader := make(chan struct{})
 	isLeader := func() bool {
@@ -199,47 +200,9 @@ func Run(ctx context.Context, cc *schedulerserverconfig.CompletedConfig, sched *
 		}
 	}
 
-	handlerSyncReadyCh := make(chan struct{})
-	handlerSyncCheck := healthz.NamedCheck("sched-handler-sync", func(_ *http.Request) error {
-		select {
-		case <-handlerSyncReadyCh:
-			return nil
-		default:
-		}
-		return fmt.Errorf("waiting for handlers to sync")
-	})
-	readyzChecks = append(readyzChecks, handlerSyncCheck)
-
-	if cc.LeaderElection != nil && utilfeature.DefaultFeatureGate.Enabled(kubefeatures.CoordinatedLeaderElection) {
-		binaryVersion, err := semver.ParseTolerant(utilversion.DefaultComponentGlobalsRegistry.EffectiveVersionFor(utilversion.DefaultKubeComponent).BinaryVersion().String())
-		if err != nil {
-			return err
-		}
-		emulationVersion, err := semver.ParseTolerant(utilversion.DefaultComponentGlobalsRegistry.EffectiveVersionFor(utilversion.DefaultKubeComponent).EmulationVersion().String())
-		if err != nil {
-			return err
-		}
-
-		// Start lease candidate controller for coordinated leader election
-		leaseCandidate, waitForSync, err := leaderelection.NewCandidate(
-			cc.Client,
-			metav1.NamespaceSystem,
-			cc.LeaderElection.Lock.Identity(),
-			"kube-scheduler",
-			binaryVersion.FinalizeVersion(),
-			emulationVersion.FinalizeVersion(),
-			[]coordinationv1.CoordinatedLeaseStrategy{coordinationv1.OldestEmulationVersion},
-		)
-		if err != nil {
-			return err
-		}
-		readyzChecks = append(readyzChecks, healthz.NewInformerSyncHealthz(waitForSync))
-		go leaseCandidate.Run(ctx)
-	}
-
 	// Start up the healthz server.
 	if cc.SecureServing != nil {
-		handler := buildHandlerChain(newHealthEndpointsAndMetricsHandler(&cc.ComponentConfig, cc.InformerFactory, isLeader, checks, readyzChecks), cc.Authentication.Authenticator, cc.Authorization.Authorizer)
+		handler := buildHandlerChain(newHealthzAndMetricsHandler(&cc.ComponentConfig, cc.InformerFactory, isLeader, checks...), cc.Authentication.Authenticator, cc.Authorization.Authorizer)
 		// TODO: handle stoppedCh and listenerStoppedCh returned by c.SecureServing.Serve
 		if _, _, err := cc.SecureServing.Serve(handler, 0, ctx.Done()); err != nil {
 			// fail early for secure handlers, removing the old error loop from above
@@ -267,7 +230,6 @@ func Run(ctx context.Context, cc *schedulerserverconfig.CompletedConfig, sched *
 			logger.Error(err, "waiting for handlers to sync")
 		}
 
-		close(handlerSyncReadyCh)
 		logger.V(3).Info("Handlers synced")
 	}
 	if !cc.ComponentConfig.DelayCacheUntilActive || cc.LeaderElection == nil {
@@ -275,9 +237,6 @@ func Run(ctx context.Context, cc *schedulerserverconfig.CompletedConfig, sched *
 	}
 	// If leader election is enabled, runCommand via LeaderElector until done and exit.
 	if cc.LeaderElection != nil {
-		if utilfeature.DefaultFeatureGate.Enabled(kubefeatures.CoordinatedLeaderElection) {
-			cc.LeaderElection.Coordinated = true
-		}
 		cc.LeaderElection.Callbacks = leaderelection.LeaderCallbacks{
 			OnStartedLeading: func(ctx context.Context) {
 				close(waitingForLeader)
@@ -345,14 +304,11 @@ func installMetricHandler(pathRecorderMux *mux.PathRecorderMux, informers inform
 	})
 }
 
-// newHealthEndpointsAndMetricsHandler creates an API health server from the config, and will also
+// newHealthzAndMetricsHandler creates a healthz server from the config, and will also
 // embed the metrics handler.
-// TODO: healthz check is deprecated, please use livez and readyz instead. Will be removed in the future.
-func newHealthEndpointsAndMetricsHandler(config *kubeschedulerconfig.KubeSchedulerConfiguration, informers informers.SharedInformerFactory, isLeader func() bool, healthzChecks, readyzChecks []healthz.HealthChecker) http.Handler {
+func newHealthzAndMetricsHandler(config *kubeschedulerconfig.KubeSchedulerConfiguration, informers informers.SharedInformerFactory, isLeader func() bool, checks ...healthz.HealthChecker) http.Handler {
 	pathRecorderMux := mux.NewPathRecorderMux("kube-scheduler")
-	healthz.InstallHandler(pathRecorderMux, healthzChecks...)
-	healthz.InstallLivezHandler(pathRecorderMux)
-	healthz.InstallReadyzHandler(pathRecorderMux, readyzChecks...)
+	healthz.InstallHandler(pathRecorderMux, checks...)
 	installMetricHandler(pathRecorderMux, informers, isLeader)
 	slis.SLIMetricsWithReset{}.Install(pathRecorderMux)
 
@@ -438,4 +394,254 @@ func Setup(ctx context.Context, opts *options.Options, outOfTreeRegistryOptions 
 	}
 
 	return &cc, sched, nil
+}
+
+type PartitionResponse struct {
+	Cuts  int   `json:"cuts"`
+	Parts []int `json:"parts"`
+}
+
+func startRebalanceLoop(ctx context.Context, sched *scheduler.Scheduler) {
+	// 쿠버네티스 클라이언트 설정
+	config, err := rest.InClusterConfig()
+	if err != nil {
+		klog.Errorf("Failed to get in-cluster config: %v", err)
+		return
+	}
+
+	clientset, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		klog.Errorf("Failed to create clientset: %v", err)
+		return
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(1 * time.Minute):
+			klog.Infof("[SCG Generator] Start")
+
+			requestData := make(map[string]interface{}) // metis requestData
+			requestData["node_list"] = []string{}
+			requestData["pod_list"] = []string{}
+
+			// 파드 정보 조회 및 출력
+			pods, err := clientset.CoreV1().Pods("default").List(ctx, metav1.ListOptions{})
+			var podList []corev1.Pod // pod data backup
+
+			if err != nil {
+				klog.Errorf("Failed to get pods: %v", err)
+			} else {
+				klog.Infof("[SCG Generator] Pod list:")
+
+				for _, pod := range pods.Items {
+					klog.InfoS("    - Pod", "name", pod.Name, "namespace", pod.Namespace)
+					requestData["pod_list"] = append(requestData["pod_list"].([]string), pod.Name)
+					podList = append(podList, pod)
+				}
+			}
+
+			// 노드 정보 조회 및 출력
+			nodes, err := clientset.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+			if err != nil {
+				klog.Errorf("Failed to get nodes: %v", err)
+			} else {
+				klog.Infof("[SCG Generator] Node list:")
+				for _, node := range nodes.Items {
+					if node.Name != "kind-control-plane" { // add Node name if node name is worker
+						klog.InfoS("    - Node", "name", node.Name)
+						requestData["node_list"] = append(requestData["node_list"].([]string), node.Name)
+					}
+				}
+			}
+
+			// pod 3개 일때 인접 리스트랑 가중치 및 노드 가중치를 임의로 설정
+			requestData["adjacency_list"] = [][]int{
+				{1, 2, 3, 4, 5, 6, 7, 8, 9, 10},
+				{11, 12},
+				{11, 12},
+				{11, 12},
+				{11, 12},
+				{11, 12},
+				{11, 12},
+				{11, 12},
+				{11, 12},
+				{11, 12},
+				{11, 12},
+				{13},
+				{11},
+			}
+			requestData["eweights"] = [][]int{
+				{300, 300, 300, 300, 300, 300, 300, 300, 300, 300},
+				{25, 75},
+				{25, 75},
+				{25, 75},
+				{25, 75},
+				{25, 75},
+				{25, 75},
+				{25, 75},
+				{25, 75},
+				{25, 75},
+				{25, 75},
+				{500},
+				{50},
+			}
+			requestData["vweights"] = []int{
+				128,
+				128,
+				128,
+				128,
+				128,
+				128,
+				128,
+				128,
+				128,
+				128,
+				128,
+				256,
+				256,
+				128,
+			}
+
+			klog.Infof("[SCG Generator] Edges & Weight")
+			klog.InfoS("    - Edges", "edge", requestData["adjacency_list"])
+			klog.InfoS("    - Edge Weights", "weight", requestData["adjacency_list"])
+			klog.InfoS("    - Node Weights", "weight", requestData["vweights"])
+
+			metisAddress := "http://metis-api-service.kube-system.svc.cluster.local:80/partition"
+			result, err := sendMetisRequest(ctx, metisAddress, requestData)
+			if err != nil {
+				klog.Errorf("Failed to METIS test: %v", err)
+			}
+			klog.Infof("[SCG Generator] METIS")
+			klog.InfoS("    - METIS Result", "Cuts", result.Cuts, "Parts", result.Parts)
+
+			// delete pod
+			deletePod(ctx, clientset, podList)
+			klog.Infof("[SCG Generator] Fin")
+		}
+	}
+}
+
+// sendMetisRequest 함수 추가
+func sendMetisRequest(ctx context.Context, metisAddress string, requestData map[string]interface{}) (*PartitionResponse, error) {
+	client := &http.Client{}
+
+	jsonData, err := json.Marshal(requestData)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request data: %v", err)
+	}
+
+	fmt.Println(string(jsonData))
+
+	req, err := http.NewRequestWithContext(ctx, "POST", metisAddress, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %v", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to send request to METIS: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("METIS returned non-OK status: %v", resp.Status)
+	}
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %v", err)
+	}
+
+	// 응답 데이터 언마샬링
+	var result PartitionResponse
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("error unmarshalling response: %w", err)
+	}
+
+	return &result, nil
+}
+
+func isPodOwnedByDeployment(pod *corev1.Pod, clientset *kubernetes.Clientset) bool {
+	if len(pod.OwnerReferences) == 0 {
+		return false
+	}
+
+	for _, ownerRef := range pod.OwnerReferences {
+		if ownerRef.Kind == "ReplicaSet" {
+			rs, err := clientset.AppsV1().ReplicaSets(pod.Namespace).Get(context.TODO(), ownerRef.Name, metav1.GetOptions{})
+			if err != nil {
+				klog.Errorf("Failed to get ReplicaSet: %v", err)
+				continue
+			}
+
+			for _, rsOwnerRef := range rs.OwnerReferences {
+				if rsOwnerRef.Kind == "Deployment" {
+					return true
+				}
+			}
+		}
+	}
+
+	return false
+}
+
+func deletePod(ctx context.Context, clientset *kubernetes.Clientset, podList []corev1.Pod) {
+	for _, pod := range podList {
+		klog.InfoS("- Pod", "name", pod.Name, "namespace", pod.Namespace)
+		// 파드의 Namespace가 default일 경우 삭제
+		if isPodOwnedByDeployment(&pod, clientset) { // 파드가 deployment일 경우
+			err := clientset.CoreV1().Pods(pod.Namespace).Delete(ctx, pod.Name, metav1.DeleteOptions{})
+			if err != nil {
+				klog.Errorf("Failed to delete pod %s in namespace %s: %v", pod.Name, pod.Namespace, err)
+				continue
+			}
+			klog.InfoS("Deleted pod for rescheduling", "name", pod.Name, "namespace", pod.Namespace)
+		} else { // 파드가 deployment가 아닐 경우
+			podSpec := pod.Spec.DeepCopy()
+
+			// 파드 삭제
+			err := clientset.CoreV1().Pods(pod.Namespace).Delete(ctx, pod.Name, metav1.DeleteOptions{})
+			if err != nil {
+				klog.Errorf("Failed to delete pod %s in namespace %s: %v", pod.Name, pod.Namespace, err)
+				continue
+			}
+			klog.InfoS("Deleted pod for rescheduling", "name", pod.Name, "namespace", pod.Namespace)
+
+			// 파드가 완전히 삭제될 때까지 대기
+			err = wait.PollImmediate(time.Second, time.Minute, func() (bool, error) {
+				_, err := clientset.CoreV1().Pods(pod.Namespace).Get(ctx, pod.Name, metav1.GetOptions{})
+				if apierrors.IsNotFound(err) {
+					return true, nil
+				}
+				return false, err
+			})
+			if err != nil {
+				klog.Errorf("Failed to wait for pod deletion: %v", err)
+				continue
+			}
+
+			// 새 파드 생성
+			newPod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      pod.Name,
+					Namespace: pod.Namespace,
+					Labels:    pod.Labels,
+				},
+				Spec: *podSpec,
+			}
+			newPod.Spec.NodeName = ""
+
+			_, err = clientset.CoreV1().Pods(pod.Namespace).Create(ctx, newPod, metav1.CreateOptions{})
+			if err != nil {
+				klog.Errorf("Failed to recreate pod %s in namespace %s: %v", pod.Name, pod.Namespace, err)
+			} else {
+				klog.InfoS("Recreated pod for rescheduling", "name", pod.Name, "namespace", pod.Namespace)
+			}
+		}
+	}
 }
