@@ -1127,21 +1127,23 @@ func getNodeFor(podName string) string {
 	response, err := client.Do(request)
 	if err != nil {
 		fmt.Errorf("Error making POST request: %v", err)
+		return ""
+	} else {
+		defer response.Body.Close() // 요청이 끝나면 응답 본문을 닫습니다.
+
+		// 응답 본문을 읽습니다.
+		body, err := ioutil.ReadAll(response.Body)
+		if err != nil {
+			fmt.Errorf("Error reading response body: %v", err)
+		}
+
+		targetNode := strings.Trim(string(body), `"`)
+
+		fmt.Println("[Scheduler] METIS API Result")
+		fmt.Println("    Pod(%s) -> Node(%s)", podName, targetNode)
+
+		return targetNode
 	}
-	defer response.Body.Close() // 요청이 끝나면 응답 본문을 닫습니다.
-
-	// 응답 본문을 읽습니다.
-	body, err := ioutil.ReadAll(response.Body)
-	if err != nil {
-		fmt.Errorf("Error reading response body: %v", err)
-	}
-
-	targetNode := strings.Trim(string(body), `"`)
-
-	fmt.Println("[Scheduler] METIS API Result")
-	fmt.Println("    Pod(%s) -> Node(%s)", podName, targetNode)
-
-	return targetNode
 }
 
 // RunScorePlugins runs the set of configured scoring plugins.

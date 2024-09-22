@@ -513,9 +513,10 @@ func startRebalanceLoop(ctx context.Context, sched *scheduler.Scheduler) {
 			result, err := sendMetisRequest(ctx, metisAddress, requestData)
 			if err != nil {
 				klog.Errorf("Failed to METIS test: %v", err)
+			} else {
+				klog.Infof("[SCG Generator] METIS")
+				klog.InfoS("    - METIS Result", "Cuts", result.Cuts, "Parts", result.Parts)
 			}
-			klog.Infof("[SCG Generator] METIS")
-			klog.InfoS("    - METIS Result", "Cuts", result.Cuts, "Parts", result.Parts)
 
 			// delete pod
 			deletePod(ctx, clientset, podList)
@@ -535,7 +536,7 @@ func sendMetisRequest(ctx context.Context, metisAddress string, requestData map[
 
 	fmt.Println(string(jsonData))
 
-	req, err := http.NewRequestWithContext(ctx, "POST", metisAddress, bytes.NewBuffer(jsonData))
+	req, err := http.NewRequest(http.MethodPost, metisAddress, bytes.NewBuffer(jsonData))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %v", err)
 	}
