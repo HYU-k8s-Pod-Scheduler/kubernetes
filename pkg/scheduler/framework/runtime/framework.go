@@ -1111,6 +1111,9 @@ func getNodeFor(podName string) string {
 		fmt.Errorf("Error marshalling JSON: %v", err)
 	}
 
+	fmt.Println("[Scheduler] METIS API Request Body", string(jsonData))
+	fmt.Println("    %s", string(jsonData))
+
 	request, err := http.NewRequest(http.MethodPost, url, bytes.NewBuffer(jsonData))
 	if err != nil {
 		fmt.Errorf("Error creating request: %v", err)
@@ -1133,7 +1136,12 @@ func getNodeFor(podName string) string {
 		fmt.Errorf("Error reading response body: %v", err)
 	}
 
-	return strings.Trim(string(body), `"`)
+	targetNode := strings.Trim(string(body), `"`)
+
+	fmt.Println("[Scheduler] METIS API Result")
+	fmt.Println("    Pod(%s) -> Node(%s)", podName, targetNode)
+
+	return targetNode
 }
 
 // RunScorePlugins runs the set of configured scoring plugins.
@@ -1159,42 +1167,6 @@ func (f *frameworkImpl) RunScorePlugins(ctx context.Context, state *framework.Cy
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	errCh := parallelize.NewErrorChannel()
-
-	requestData := map[string]interface{}{
-		"node_list":      []string{"kind-worker", "kind-worker2"},
-		"pod_list":       []string{"annotation-second-scheduler", "annotation-second-scheduler-2", "annotation-second-scheduler-3"},
-		"adjacency_list": [][]int{[]int{1, 2}, []int{2}, []int{}},
-		"eweights":       [][]int{[]int{100, 200}, []int{200}, []int{}},
-	}
-
-	jsonData, err := json.Marshal(requestData)
-	if err != nil {
-		fmt.Errorf("Error marshalling JSON: %v", err)
-	}
-
-	url := "http://metis-api-service.kube-system.svc.cluster.local:80/partition"
-
-	request, err := http.NewRequest(http.MethodPost, url, bytes.NewBuffer(jsonData))
-	if err != nil {
-		fmt.Errorf("Error creating request: %v", err)
-	}
-
-	// Content-Type 헤더를 설정합니다.
-	request.Header.Set("Content-Type", "application/json")
-
-	// 클라이언트를 생성하고 요청을 보냅니다.
-	client := &http.Client{}
-	response, err := client.Do(request)
-	if err != nil {
-		fmt.Errorf("Error making POST request: %v", err)
-	}
-	defer response.Body.Close() // 요청이 끝나면 응답 본문을 닫습니다.
-
-	// 응답 본문을 읽습니다.
-	_, err = ioutil.ReadAll(response.Body)
-	if err != nil {
-		fmt.Errorf("Error reading response body: %v", err)
-	}
 
 	if len(plugins) > 0 {
 		logger := klog.FromContext(ctx)
@@ -1281,26 +1253,17 @@ func (f *frameworkImpl) RunScorePlugins(ctx context.Context, state *framework.Cy
 		return nil, framework.AsStatus(fmt.Errorf("applying score defaultWeights on Score plugins: %w", err))
 	}
 
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-
 	targetNode := getNodeFor(pod.Name)
 
 	for i, nodePluginScores := range allNodePluginScores {
-		fmt.Println("targetNode:", targetNode, "nodeName:", nodePluginScores.Name, "totalScore:", nodePluginScores.TotalScore, "result:", nodePluginScores.Name == targetNode)
 		if nodePluginScores.Name == targetNode {
 			allNodePluginScores[i].TotalScore = 9999999
 		}
-		fmt.Println("targetNode:", targetNode, "nodeName:", nodePluginScores.Name, "totalScore:", nodePluginScores.TotalScore)
-
 	}
 
-	fmt.Println(pod.Name)
-	j, err := json.Marshal(allNodePluginScores)
-	fmt.Println(string(j))
-	fmt.Println("")
+	j, _ := json.Marshal(allNodePluginScores)
+	fmt.Println("[Scheduler] Score Plugin Result")
+	fmt.Println("    %s", string(j))
 
 	return allNodePluginScores, nil
 }
