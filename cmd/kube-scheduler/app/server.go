@@ -471,7 +471,7 @@ func startRebalanceLoop(ctx context.Context, sched *scheduler.Scheduler) {
 			requestData["eweights"] = [][]int{
 				{300, 300, 300, 300, 300},
 				{300, 75, 25},
-				{300, 75 ,25},
+				{300, 75, 25},
 				{300, 75, 25},
 				{300, 75, 25},
 				{300, 75, 25},
@@ -520,8 +520,6 @@ func sendMetisRequest(ctx context.Context, metisAddress string, requestData map[
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request data: %v", err)
 	}
-
-	fmt.Println(string(jsonData))
 
 	req, err := http.NewRequest(http.MethodPost, metisAddress, bytes.NewBuffer(jsonData))
 	if err != nil {
