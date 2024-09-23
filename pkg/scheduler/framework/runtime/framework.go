@@ -1111,8 +1111,8 @@ func getNodeFor(podName string) string {
 		fmt.Errorf("Error marshalling JSON: %v", err)
 	}
 
-	klog.Infof("[Scheduler] METIS API Request Body")
-	klog.Infof("    ", string(jsonData))
+	klog.InfoS("[Scheduler] METIS API Request Body")
+	klog.InfoS("    ", string(jsonData))
 
 	request, err := http.NewRequest(http.MethodPost, url, bytes.NewBuffer(jsonData))
 	if err != nil {
@@ -1139,8 +1139,8 @@ func getNodeFor(podName string) string {
 
 		targetNode := strings.Trim(string(body), `"`)
 
-		klog.Infof("[Scheduler] METIS API Result")
-		klog.Infof("    Pod:", podName, "-> Node:", targetNode)
+		klog.InfoS("[Scheduler] METIS API Result")
+		klog.InfoS("    ", "Pod", podName, "-> Node", targetNode)
 
 		return targetNode
 	}
@@ -1257,15 +1257,13 @@ func (f *frameworkImpl) RunScorePlugins(ctx context.Context, state *framework.Cy
 
 	targetNode := getNodeFor(pod.Name)
 
+	klog.InfoS("[Scheduler] Score Plugin Result")
 	for i, nodePluginScores := range allNodePluginScores {
 		if nodePluginScores.Name == targetNode {
 			allNodePluginScores[i].TotalScore = 9999999
 		}
+		klog.InfoS("    - Node", "name", allNodePluginScores[i].Name, "score", allNodePluginScores[i].TotalScore)
 	}
-
-	j, _ := json.Marshal(allNodePluginScores)
-	klog.InfoS("[Scheduler] Score Plugin Result")
-	klog.InfoS("    ", string(j))
 
 	return allNodePluginScores, nil
 }
