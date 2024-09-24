@@ -459,14 +459,14 @@ func startRebalanceLoop(ctx context.Context, sched *scheduler.Scheduler) {
 			// pod 3개 일때 인접 리스트랑 가중치 및 노드 가중치를 임의로 설정
 			requestData["adjacency_list"] = [][]int{
 				{1, 2, 3, 4, 5},
-				{0, 6, 7},
-				{0, 6, 7},
-				{0, 6, 7},
-				{0, 6, 7},
-				{0, 6, 7},
-				{1, 2, 3, 4, 5, 7},
-				{1, 2, 3, 4, 5, 6, 8},
-				{7},
+				{6, 7},
+				{6, 7},
+				{6, 7},
+				{6, 7},
+				{6, 7},
+				{8},
+				{6},
+				{},
 			}
 			requestData["eweights"] = [][]int{
 				{300, 300, 300, 300, 300},
@@ -480,15 +480,7 @@ func startRebalanceLoop(ctx context.Context, sched *scheduler.Scheduler) {
 				{99999},
 			}
 			requestData["vweights"] = []int{
-				128,
-				128,
-				128,
-				128,
-				128,
-				128,
-				256,
-				256,
-				128,
+				1, 1, 1, 1, 1, 1, 2, 2, 1,
 			}
 
 			klog.Infof("[SCG Generator] Edges & Weight")
