@@ -22,6 +22,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io/ioutil"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -419,7 +420,7 @@ func startRebalanceLoop(ctx context.Context, sched *scheduler.Scheduler) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(1 * time.Minute):
+		case <-time.After(10 * time.Minute):
 			klog.Infof("[SCG Generator] Start")
 
 			requestData := make(map[string]interface{}) // metis requestData
@@ -436,9 +437,11 @@ func startRebalanceLoop(ctx context.Context, sched *scheduler.Scheduler) {
 				klog.Infof("[SCG Generator] Pod list:")
 
 				for _, pod := range pods.Items {
-					klog.InfoS("    - Pod", "name", pod.Name, "namespace", pod.Namespace)
-					requestData["pod_list"] = append(requestData["pod_list"].([]string), pod.Name)
-					podList = append(podList, pod)
+					if !strings.HasPrefix(pod.Name, "loadgenerator") {
+						klog.InfoS("    - Pod", "name", pod.Name, "namespace", pod.Namespace)
+						requestData["pod_list"] = append(requestData["pod_list"].([]string), pod.Name)
+						podList = append(podList, pod)
+					}
 				}
 			}
 
@@ -449,7 +452,7 @@ func startRebalanceLoop(ctx context.Context, sched *scheduler.Scheduler) {
 			} else {
 				klog.Infof("[SCG Generator] Node list:")
 				for _, node := range nodes.Items {
-					if node.Name != "kind-control-plane" { // add Node name if node name is worker
+					if node.Name != "kind-control-plane" || node.Name != "kind-worker4" || node.Name != "kind-worker5" || node.Name != "kind-worker6" { // add Node name if node name is worker
 						klog.InfoS("    - Node", "name", node.Name)
 						requestData["node_list"] = append(requestData["node_list"].([]string), node.Name)
 					}
@@ -458,29 +461,37 @@ func startRebalanceLoop(ctx context.Context, sched *scheduler.Scheduler) {
 
 			// pod 3개 일때 인접 리스트랑 가중치 및 노드 가중치를 임의로 설정
 			requestData["adjacency_list"] = [][]int{
-				{1, 2, 3, 4, 5},
-				{6, 7},
-				{6, 7},
-				{6, 7},
-				{6, 7},
-				{6, 7},
-				{8},
-				{6},
-				{},
+				{},                            // 0: adservice
+				{11},                          // 1: cartservice
+				{11},                          // 2: cartservice
+				{11},                          // 3: cartservice
+				{9, 1, 2, 3, 12, 5, 8, 6},     // 4: checkoutserivce
+				{},                            // 5: currencyservice
+				{},                            // 6: emailservice
+				{0, 10, 9, 1, 2, 3, 12, 5, 4}, // 7: frontend
+				{},                            // 8: paymentservice
+				{},                            // 9: productcatalogservice
+				{9},                           // 10: recommendationservice
+				{},                            // 11: redis-cart
+				{},                            // 12: shippingservice
 			}
 			requestData["eweights"] = [][]int{
-				{300, 300, 300, 300, 300},
-				{300, 75, 25},
-				{300, 75, 25},
-				{300, 75, 25},
-				{300, 75, 25},
-				{300, 75, 25},
-				{75, 75, 75, 75, 75, 50},
-				{25, 25, 25, 25, 25, 50, 99999},
-				{99999},
+				{},
+				{100},
+				{100},
+				{100},
+				{500, 110, 110, 110, 365, 485, 175, 250},
+				{},
+				{},
+				{2750, 3600, 27500, 1250, 1250, 1250, 880, 12100, 330},
+				{},
+				{},
+				{15700},
+				{},
+				{},
 			}
 			requestData["vweights"] = []int{
-				1, 1, 1, 1, 1, 1, 2, 2, 1,
+				1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
 			}
 
 			klog.Infof("[SCG Generator] Edges & Weight")
@@ -500,6 +511,7 @@ func startRebalanceLoop(ctx context.Context, sched *scheduler.Scheduler) {
 			// delete pod
 			deletePod(ctx, clientset, podList)
 			klog.Infof("[SCG Generator] Fin")
+			return
 		}
 	}
 }
