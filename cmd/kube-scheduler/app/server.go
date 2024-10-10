@@ -511,7 +511,6 @@ func startRebalanceLoop(ctx context.Context, sched *scheduler.Scheduler) {
 			// delete pod
 			deletePod(ctx, clientset, podList)
 			klog.Infof("[SCG Generator] Fin")
-			return
 		}
 	}
 }
